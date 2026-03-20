@@ -72,7 +72,8 @@ namespace Tubifarry.Indexers.Soulseek
                             LockedFiles = response.LockedFiles,
                             QueueLength = response.QueueLength,
                             Token = response.Token,
-                            FileCount = response.FileCount
+                            FileCount = response.FileCount,
+                            Files = directoryGroup.ToList()
                         };
 
                         IGrouping<string, SlskdFileData> finalGroup = directoryGroup;

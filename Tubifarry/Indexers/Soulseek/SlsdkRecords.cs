@@ -97,11 +97,11 @@ namespace Tubifarry.Indexers.Soulseek
                 int trackDiff = actualTrackCount - expectedTrackCount;
 
                 if (trackDiff < 0) // -1: ~500 pts, -2: ~60 pts, -3+: near 0
-                    score += (int)(2500 * Math.Exp(-Math.Pow(Math.Abs(trackDiff), 2) * 5));
+                    score += (int)(10000 * Math.Exp(-Math.Pow(Math.Abs(trackDiff), 2) * 5));
                 else if (trackDiff == 0)  // PERFECT MATCH
-                    score += 2500;
+                    score += 10000;
                 else   // EXTRA TRACKS: Less critical, just penalized: +1: ~1600 pts, +2: ~600 pts, +3: ~100 pts, +15: near 0
-                    score += (int)(2500 * Math.Exp(-Math.Pow(trackDiff, 2) * 1.5));
+                    score += (int)(10000 * Math.Exp(-Math.Pow(trackDiff, 2) * 1.5));
             }
 
             // ===== AVAILABILITY RATIO (0 to +2000) =====
@@ -124,7 +124,7 @@ namespace Tubifarry.Indexers.Soulseek
             // ===== COLLECTION SIZE (0 to +300) =====
             score += Math.Min(300, (int)(Math.Log10(Math.Max(1, FileCount) + 1) * 150));
 
-            return Math.Clamp(score, 0, 10000);
+            return Math.Clamp(score, 0, 100000);
         }
     }
 

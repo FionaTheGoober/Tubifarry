@@ -38,13 +38,59 @@ namespace Tubifarry.Indexers.Soulseek
 
         public IndexerPageableRequestChain<LazyIndexerPageableRequest> GetRecentRequests() => new LazyIndexerPageableRequestChain(Settings.MinimumResults);
 
+        private static AlbumRelease? getBestAlbumRelease(List<AlbumRelease>? releases)
+        {
+            AlbumRelease? result = null;
+
+            if (releases != null)
+            {
+                foreach (AlbumRelease current in releases)
+                {
+                    if (result == null)
+                    {
+                        result = current;
+                    }
+                    else
+                    {
+                        if (current.ReleaseDate < result.ReleaseDate)
+                        {
+                            result = current;
+                        }
+                        else if (current.ReleaseDate == result.ReleaseDate)
+                        {
+                            if (current.TrackCount < result.TrackCount)
+                            {
+                                result = current;
+                            }
+                        }
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        private static int getTrackCountOfBestRelease(List<AlbumRelease>? releases)
+        {
+            int result = 0;
+
+            AlbumRelease? bestRelease = getBestAlbumRelease(releases);
+
+            if (bestRelease != null)
+            {
+                result = bestRelease.TrackCount;
+            }
+
+            return result;
+        }
+
         public IndexerPageableRequestChain<LazyIndexerPageableRequest> GetSearchRequests(AlbumSearchCriteria searchCriteria)
         {
             _logger.Trace($"Setting up lazy search for album: {searchCriteria.AlbumQuery} by artist: {searchCriteria.ArtistQuery}");
 
             Album? album = searchCriteria.Albums.FirstOrDefault();
             List<AlbumRelease>? albumReleases = album?.AlbumReleases?.Value;
-            int trackCount = albumReleases?.Any() == true ? albumReleases.Min(x => x.TrackCount) : 0;
+            int trackCount = getTrackCountOfBestRelease(albumReleases);
             List<string> tracks = albumReleases?.FirstOrDefault(x => x.Tracks?.Value is { Count: > 0 })?.Tracks?.Value?
                 .Where(x => !string.IsNullOrEmpty(x.Title)).Select(x => x.Title).ToList() ?? [];
 
