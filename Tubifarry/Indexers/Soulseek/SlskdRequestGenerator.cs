@@ -1,4 +1,5 @@
 using NLog;
+using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Http;
 using NzbDrone.Common.Instrumentation;
 using NzbDrone.Core.Indexers;
@@ -44,6 +45,25 @@ namespace Tubifarry.Indexers.Soulseek
 
         public IndexerPageableRequestChain<LazyIndexerPageableRequest> GetRecentRequests() => new LazyIndexerPageableRequestChain(Settings.MinimumResults);
 
+        private static bool IsVinyl(AlbumRelease? release)
+        {
+            bool result = false;
+
+            if (release != null)
+            {
+                foreach (Medium medium in release.Media)
+                {
+                    if (medium.Format.ContainsIgnoreCase("vinyl"))
+                    {
+                        result = true;
+                        break;
+                    }
+                }
+            }
+
+            return result;
+        }
+
         private static AlbumRelease? GetBestAlbumRelease(List<AlbumRelease>? releases)
         {
             AlbumRelease? result = null;
@@ -58,15 +78,25 @@ namespace Tubifarry.Indexers.Soulseek
                     }
                     else
                     {
-                        if (current.ReleaseDate < result.ReleaseDate)
+                        bool rVinyl = IsVinyl(result);
+                        bool cVinyl = IsVinyl(current);
+
+                        if (rVinyl && !cVinyl)
                         {
                             result = current;
                         }
-                        else if (current.ReleaseDate == result.ReleaseDate)
+                        else if (rVinyl == cVinyl)
                         {
-                            if (current.TrackCount < result.TrackCount)
+                            if (current.ReleaseDate < result.ReleaseDate)
                             {
                                 result = current;
+                            }
+                            else if (current.ReleaseDate == result.ReleaseDate)
+                            {
+                                if (current.TrackCount < result.TrackCount)
+                                {
+                                    result = current;
+                                }
                             }
                         }
                     }
