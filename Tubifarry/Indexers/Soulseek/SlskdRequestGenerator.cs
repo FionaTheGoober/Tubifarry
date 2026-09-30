@@ -30,6 +30,32 @@ namespace Tubifarry.Indexers.Soulseek
 
         private static SemaphoreSlim? _searchLimiter;
         private static readonly object _limiterLock = new();
+        private const double NearDuplicateTracklistThreshold = 0.93;
+        private static readonly string[] _nonStandardEditionTerms =
+        [
+            "anniversary",
+            "bonus",
+            "collector",
+            "d.l.x",
+            "deluxe",
+            "dlx",
+            "expanded",
+            "legacy edition",
+            "limited edition",
+            "remaster",
+            "reissue",
+            "special edition",
+            "super deluxe",
+            "tour edition"
+        ];
+        private static readonly string[] _nonSongTrackTerms =
+        [
+            "behind the scenes",
+            "commentary",
+            "documentary",
+            "interview",
+            "making of"
+        ];
         private static int _currentLimit;
 
         private SlskdSettings Settings => _indexer.Settings;
@@ -45,65 +71,151 @@ namespace Tubifarry.Indexers.Soulseek
 
         public IndexerPageableRequestChain<LazyIndexerPageableRequest> GetRecentRequests() => new LazyIndexerPageableRequestChain(Settings.MinimumResults);
 
-        private static bool IsVinyl(AlbumRelease? release)
-        {
-            bool result = false;
+        private static bool IsVinyl(AlbumRelease release) =>
+            release.Media.Any(m => m.Format.ContainsIgnoreCase("vinyl"));
 
-            if (release != null)
+        private static int GetStatusPenalty(AlbumRelease release) => release.Status?.ToLowerInvariant() switch
+        {
+            "official" => 0,
+            null or "" => 1,
+            "withdrawn" => 2,
+            "promotion" => 3,
+            "bootleg" => 4,
+            "pseudo-release" => 5,
+            "cancelled" => 6,
+            "expunged" => 7,
+            _ => 1
+        };
+
+        private static int GetEditionPenalty(AlbumRelease release)
+        {
+            string edition = $"{release.Title} {release.Disambiguation}";
+            int penalty = _nonStandardEditionTerms.Count(edition.ContainsIgnoreCase);
+            bool containsNonSongTrack = release.Tracks?.Value?.Any(track =>
+                _nonSongTrackTerms.Any(track.Title.ContainsIgnoreCase)) == true;
+
+            return penalty + (containsNonSongTrack ? 1 : 0);
+        }
+
+        private static int GetMediaPreference(AlbumRelease release)
+        {
+            if (release.Media.Any(m => m.Format.ContainsIgnoreCase("digital")))
+                return 20;
+
+            if (release.Media.Any(m => m.Format.ContainsIgnoreCase("cd")))
+                return 15;
+
+            if (release.Media.Count == 0 || release.Media.All(m => string.IsNullOrWhiteSpace(m.Format) || m.Format.ContainsIgnoreCase("unknown")))
+                return 5;
+
+            return 0;
+        }
+
+        private static int GetCountryPreference(AlbumRelease release)
+        {
+            if (release.Country.Any(c => string.Equals(c, "XW", StringComparison.OrdinalIgnoreCase) || c.ContainsIgnoreCase("worldwide")))
+                return 5;
+
+            return release.Country.Count > 0 ? 2 : 0;
+        }
+
+        private static List<string> GetTrackFingerprint(AlbumRelease release) => release.Tracks?.Value?
+            .Where(t => !string.IsNullOrWhiteSpace(t.ForeignRecordingId) || !string.IsNullOrWhiteSpace(t.Title))
+            .Select(t => !string.IsNullOrWhiteSpace(t.ForeignRecordingId)
+                ? $"id:{t.ForeignRecordingId.ToLowerInvariant()}"
+                : $"title:{string.Concat(t.Title.Where(char.IsLetterOrDigit)).ToLowerInvariant()}")
+            .ToList() ?? [];
+
+        private static double GetTracklistSimilarity(AlbumRelease left, AlbumRelease right)
+        {
+            List<string> leftTracks = GetTrackFingerprint(left);
+            List<string> rightTracks = GetTrackFingerprint(right);
+            if (leftTracks.Count == 0 || rightTracks.Count == 0)
+                return 0;
+
+            HashSet<string> leftSet = leftTracks.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            HashSet<string> rightSet = rightTracks.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            double setSimilarity = 2.0 * leftSet.Intersect(rightSet, StringComparer.OrdinalIgnoreCase).Count() / (leftSet.Count + rightSet.Count);
+
+            int comparedPositions = Math.Min(leftTracks.Count, rightTracks.Count);
+            int matchingPositions = Enumerable.Range(0, comparedPositions)
+                .Count(i => string.Equals(leftTracks[i], rightTracks[i], StringComparison.OrdinalIgnoreCase));
+            double orderSimilarity = matchingPositions / (double)Math.Max(leftTracks.Count, rightTracks.Count);
+            double lengthSimilarity = Math.Min(leftTracks.Count, rightTracks.Count) / (double)Math.Max(leftTracks.Count, rightTracks.Count);
+
+            return setSimilarity * 0.6 + orderSimilarity * 0.3 + lengthSimilarity * 0.1;
+        }
+
+        private static double GetConsensusScore(AlbumRelease release, List<AlbumRelease> releases)
+        {
+            return releases.Count == 0
+                ? 1
+                : releases.Average(other => GetTracklistSimilarity(release, other));
+        }
+
+        private static List<AlbumRelease> GetDistinctTracklistRepresentatives(IEnumerable<AlbumRelease> releases)
+        {
+            List<AlbumRelease> representatives = [];
+
+            foreach (AlbumRelease release in releases
+                .OrderBy(r => r.TrackCount)
+                .ThenBy(r => r.Media.Count)
+                .ThenBy(r => r.ReleaseDate ?? DateTime.MaxValue))
             {
-                foreach (Medium medium in release.Media)
-                {
-                    if (medium.Format.ContainsIgnoreCase("vinyl"))
-                    {
-                        result = true;
-                        break;
-                    }
-                }
+                List<string> fingerprint = GetTrackFingerprint(release);
+                bool isNearDuplicate = fingerprint.Count > 0 && representatives.Any(existing =>
+                    GetTrackFingerprint(existing).Count > 0 &&
+                    GetTracklistSimilarity(release, existing) >= NearDuplicateTracklistThreshold);
+
+                if (!isNearDuplicate)
+                    representatives.Add(release);
             }
 
-            return result;
+            return representatives;
+        }
+
+        private static double GetReleaseScore(AlbumRelease release, List<AlbumRelease> releases, int minimumTrackCount)
+        {
+            double score = GetConsensusScore(release, releases) * 100;
+            score -= GetEditionPenalty(release) * 40;
+            score += GetMediaPreference(release);
+            score += GetCountryPreference(release);
+            score -= Math.Max(0, release.Media.Count - 1) * 3;
+
+            if (minimumTrackCount > 0 && release.TrackCount > minimumTrackCount)
+                score -= Math.Min(20, (release.TrackCount - minimumTrackCount) * 2);
+
+            return score;
         }
 
         private static AlbumRelease? GetBestAlbumRelease(List<AlbumRelease>? releases)
         {
-            AlbumRelease? result = null;
+            if (releases == null || releases.Count == 0)
+                return null;
 
-            if (releases != null)
-            {
-                foreach (AlbumRelease current in releases)
-                {
-                    if (result == null)
-                    {
-                        result = current;
-                    }
-                    else
-                    {
-                        bool rVinyl = IsVinyl(result);
-                        bool cVinyl = IsVinyl(current);
+            int preferredStatus = releases.Min(GetStatusPenalty);
+            List<AlbumRelease> candidates = releases.Where(release => GetStatusPenalty(release) == preferredStatus).ToList();
+            int preferredEdition = candidates.Min(GetEditionPenalty);
+            List<AlbumRelease> consensusReleases = GetDistinctTracklistRepresentatives(
+                candidates.Where(release => GetEditionPenalty(release) == preferredEdition));
 
-                        if (rVinyl && !cVinyl)
-                        {
-                            result = current;
-                        }
-                        else if (rVinyl == cVinyl)
-                        {
-                            if (current.ReleaseDate < result.ReleaseDate)
-                            {
-                                result = current;
-                            }
-                            else if (current.ReleaseDate == result.ReleaseDate)
-                            {
-                                if (current.TrackCount < result.TrackCount)
-                                {
-                                    result = current;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            List<AlbumRelease> nonVinylCandidates = candidates.Where(release => !IsVinyl(release)).ToList();
+            if (nonVinylCandidates.Count > 0)
+                candidates = nonVinylCandidates;
 
-            return result;
+            int minimumTrackCount = candidates.Where(release => release.TrackCount > 0)
+                .Select(release => release.TrackCount)
+                .DefaultIfEmpty(0)
+                .Min();
+
+            return candidates
+                .OrderByDescending(release => GetReleaseScore(release, consensusReleases, minimumTrackCount))
+                .ThenBy(release => release.Media.Count)
+                .ThenBy(release => release.TrackCount)
+                .ThenBy(release => release.Duration > 0 ? release.Duration : int.MaxValue)
+                .ThenBy(release => release.ReleaseDate ?? DateTime.MaxValue)
+                .ThenBy(release => release.ForeignReleaseId, StringComparer.Ordinal)
+                .First();
         }
 
         public IndexerPageableRequestChain<LazyIndexerPageableRequest> GetSearchRequests(AlbumSearchCriteria searchCriteria)
