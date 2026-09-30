@@ -112,9 +112,7 @@ namespace Tubifarry.Indexers.Soulseek
 
             Album? album = searchCriteria.Albums.FirstOrDefault();
             List<AlbumRelease>? albumReleases = album?.AlbumReleases?.Value;
-            AlbumRelease? monitoredRelease = albumReleases?.FirstOrDefault(r => r.Monitored);
-            AlbumRelease? canonicalRelease = GetBestAlbumRelease(albumReleases);
-            AlbumRelease? selectedRelease = monitoredRelease ?? canonicalRelease;
+            AlbumRelease? selectedRelease = GetBestAlbumRelease(albumReleases);
             int trackCount = selectedRelease?.TrackCount ?? 0;
             AlbumRelease? trackSource = selectedRelease?.Tracks?.Value is { Count: > 0 }
                 ? selectedRelease
@@ -148,10 +146,11 @@ namespace Tubifarry.Indexers.Soulseek
 
             Album? album = searchCriteria.Albums.FirstOrDefault();
             List<AlbumRelease>? albumReleases = album?.AlbumReleases?.Value;
-            AlbumRelease? monitoredRelease = albumReleases?.FirstOrDefault(r => r.Monitored);
-            int trackCount = monitoredRelease?.TrackCount
-                ?? (albumReleases?.Any() == true ? albumReleases.Min(x => x.TrackCount) : 0);
-            AlbumRelease? trackSource = monitoredRelease ?? albumReleases?.FirstOrDefault(x => x.Tracks?.Value is { Count: > 0 });
+            AlbumRelease? selectedRelease = GetBestAlbumRelease(albumReleases);
+            int trackCount = selectedRelease?.TrackCount ?? 0;
+            AlbumRelease? trackSource = selectedRelease?.Tracks?.Value is { Count: > 0 }
+                ? selectedRelease
+                : albumReleases?.FirstOrDefault(x => x.Tracks?.Value is { Count: > 0 });
             List<Track>? trackList = trackSource?.Tracks?.Value?.Where(x => !string.IsNullOrEmpty(x.Title)).ToList();
             List<string> tracks = trackList?.Select(x => x.Title).ToList() ?? [];
             List<int> trackDurations = trackList?.Where(t => t.Duration > 0).Select(t => t.Duration).ToList() ?? [];
